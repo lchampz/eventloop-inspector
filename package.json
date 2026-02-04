@@ -1,0 +1,28 @@
+{
+  "name": "eventloop-sentry",
+  "version": "1.0.0",
+  "description": "Monitor de baixa latência para Event Loop, V8 Microtasks e Heap Memory.",
+  "main": "core-inspector.js",
+  "types": "index.d.ts",
+  "type": "module",
+  "files": [
+    "core-inspector.js",
+    "index.d.ts",
+    "monitor.cc",
+    "binding.gyp"
+  ],
+  "scripts": {
+    "install": "node-gyp rebuild",
+    "test": "node examples/test-debugger.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2"
+  },
+  "devDependencies": {
+    "node-gyp": "^10.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

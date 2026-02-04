@@ -1,0 +1,21 @@
+# Build artifacts
+build/
+config.gypi
+*.target.mk
+Makefile
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Development files
+.vscode/
+test-debugger.js
+telemetry.js
+index.js
+collector.js
+
+# Source Control
+.git/
+.gitignore
