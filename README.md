@@ -1,6 +1,6 @@
-# Node Core Sentry 🚀
+# Eventloop Sentry 🚀
 
-**Node Core Sentry** é um "Sentry" de baixo nível para aplicações Node.js. Ele utiliza um Addon nativo escrito em C++ para monitorar o **Event Loop**, a **Microtask Queue (V8)** e o **Heap Memory** sem o overhead de ferramentas puramente escritas em JavaScript.
+**Eventloop Sentry** é um "Sentry" de baixo nível para aplicações Node.js. Ele utiliza um Addon nativo escrito em C++ para monitorar o **Event Loop**, a **Microtask Queue (V8)** e o **Heap Memory** sem o overhead de ferramentas puramente escritas em JavaScript.
 
 Ideal para detectar **Race Conditions**, **Memory Leaks** e **Funções Bloqueantes** em tempo real.
 
@@ -11,7 +11,7 @@ Diferente de profilers comuns, esta lib cria uma thread separada no nível do si
 ## 📦 Instalação
 
 ```bash
-npm install node-core-sentry
+npm install eventloop-sentry
 
 ```
 
@@ -22,7 +22,7 @@ _Nota: Requer ferramentas de compilação (Python/C++) instaladas para o `node-g
 ### Em JavaScript (ESM)
 
 ```javascript
-import { inspector } from "node-core-sentry";
+import { inspector } from "eventloop-sentry";
 
 inspector.start({ threshold: 50 }); // Alerta se o loop travar por > 50ms
 
@@ -38,10 +38,11 @@ inspector.on("block", (data) => {
 A lib já inclui definições de tipos nativas.
 
 ```typescript
-import { inspector, BlockEventData } from "node-core-sentry";
+import { inspector, BlockEventData } from "eventloop-sentry";
 
 inspector.on("block", (data: BlockEventData) => {
-  // Autocomplete total aqui
+  console.log(data);
+  //handle para eventos bloqueantes
 });
 ```
 
