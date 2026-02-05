@@ -105,6 +105,130 @@ export function getRegisteredActions(): ActionType[] {
 }
 
 /**
+ * Interface para os dados de validação
+ */
+interface ValidationContext {
+  lagValue: number;
+  memoryValue: number;
+  ioValue: number;
+  blockThreshold: number;
+  heapThreshold: number;
+  ioThreshold: number;
+  isLagHigh: boolean;
+  isMemoryHigh: boolean;
+  isIoHigh: boolean;
+  isLagLow: boolean;
+}
+
+/**
+ * Valida e corrige a decisão da IA com base nos dados reais.
+ * Se a IA cometer um erro de comparação, corrige automaticamente.
+ */
+function validateAndCorrectDecision(
+  decision: DecisionResponse,
+  ctx: ValidationContext,
+): DecisionResponse {
+  const {
+    lagValue,
+    memoryValue,
+    ioValue,
+    blockThreshold,
+    heapThreshold,
+    ioThreshold,
+  } = ctx;
+  const { isLagHigh, isMemoryHigh, isIoHigh, isLagLow } = ctx;
+
+  // Verifica se a IA tomou uma decisão inconsistente com os dados
+  let correctedAction = decision.action;
+  let correctedReason = decision.reason;
+  let needsCorrection = false;
+
+  // Prioridade 1: Memória alta
+  if (isMemoryHigh && decision.action !== "CLEAN_CACHE") {
+    correctedAction = "CLEAN_CACHE";
+    correctedReason = `Memória ${memoryValue.toFixed(2)}% excede limite de ${heapThreshold}%`;
+    needsCorrection = true;
+  }
+  // Prioridade 2: I/O alto
+  else if (isIoHigh && decision.action !== "REJECT_TRAFFIC" && !isMemoryHigh) {
+    correctedAction = "REJECT_TRAFFIC";
+    correctedReason = `I/O ${ioValue} requisições excede limite de ${ioThreshold}`;
+    needsCorrection = true;
+  }
+  // Prioridade 3: Lag alto
+  else if (
+    isLagHigh &&
+    decision.action !== "SCALE_UP_WORKERS" &&
+    !isMemoryHigh &&
+    !isIoHigh
+  ) {
+    correctedAction = "SCALE_UP_WORKERS";
+    correctedReason = `Lag ${lagValue}ms excede limite de ${blockThreshold}ms`;
+    needsCorrection = true;
+  }
+  // Prioridade 4: Lag muito baixo (economia)
+  else if (
+    isLagLow &&
+    memoryValue < 50 &&
+    decision.action !== "SCALE_DOWN_WORKERS" &&
+    !isMemoryHigh &&
+    !isIoHigh &&
+    !isLagHigh
+  ) {
+    correctedAction = "SCALE_DOWN_WORKERS";
+    correctedReason = `Lag ${lagValue}ms muito baixo, oportunidade de economia`;
+    needsCorrection = true;
+  }
+  // Correção: IA disse para escalar mas não há necessidade
+  else if (
+    (decision.action === "SCALE_UP_WORKERS" && !isLagHigh) ||
+    (decision.action === "CLEAN_CACHE" && !isMemoryHigh) ||
+    (decision.action === "REJECT_TRAFFIC" && !isIoHigh)
+  ) {
+    correctedAction = "NONE";
+    correctedReason = `Métricas dentro dos limites (Lag: ${lagValue}ms, Mem: ${memoryValue.toFixed(2)}%, I/O: ${ioValue})`;
+    needsCorrection = true;
+  }
+
+  if (needsCorrection) {
+    console.log(
+      `[Validação] Corrigindo decisão da IA: ${decision.action} → ${correctedAction}`,
+    );
+  }
+
+  return {
+    action: correctedAction,
+    reason: correctedReason,
+    intensity: calculateIntensity(ctx),
+  };
+}
+
+/**
+ * Calcula a intensidade com base na severidade dos valores
+ */
+function calculateIntensity(ctx: ValidationContext): number {
+  const {
+    lagValue,
+    memoryValue,
+    ioValue,
+    blockThreshold,
+    heapThreshold,
+    ioThreshold,
+  } = ctx;
+
+  // Calcula o quanto cada métrica excede o limite (em %)
+  const lagExcess = Math.max(0, (lagValue - blockThreshold) / blockThreshold);
+  const memExcess = Math.max(0, (memoryValue - heapThreshold) / heapThreshold);
+  const ioExcess = Math.max(0, (ioValue - ioThreshold) / ioThreshold);
+
+  // Pega o maior excesso e converte para escala 1-10
+  const maxExcess = Math.max(lagExcess, memExcess, ioExcess);
+  const intensity = Math.min(10, Math.max(1, Math.round(1 + maxExcess * 9)));
+
+  return intensity;
+}
+
+/**
  * Consulta o Ollama local com um prompt de SRE.
  */
 let isAnalyzing = false;
@@ -129,29 +253,52 @@ export async function askOllamaDecision(
   const heapThreshold = thresholds.heap || 85;
   const ioThreshold = thresholds.io || 100;
 
-  const prompt = `
-    Você é um Orquestrador de Recursos Autônomo.
-    ESTADO ATUAL:
-    - Função: ${data.function}
-    - Lag: ${data.blockDuration}ms
-    - Memória: ${data.memoryUsage}
-    - I/O Ativo: ${data.activeRequests}
+  // Extrai valor numérico da memória (remove o %)
+  const memoryValue = parseFloat(data.memoryUsage?.replace("%", "") || "0");
+  const lagValue = data.blockDuration || 0;
+  const ioValue = data.activeRequests || 0;
 
-    LIMITES CONFIGURADOS PELO USUÁRIO:
-    - Limite de Bloqueio: ${blockThreshold}ms
-    - Limite de Heap: ${heapThreshold}%
-    - Limite de I/O: ${ioThreshold} requisições
+  // Pré-calcula as condições para ajudar a IA
+  const isLagHigh = lagValue > blockThreshold;
+  const isLagLow = lagValue < Math.floor(blockThreshold * 0.3);
+  const isMemoryHigh = memoryValue > heapThreshold;
+  const isIoHigh = ioValue > ioThreshold;
 
-    OBJETIVO: Encontrar o equilíbrio entre performance e custo.
-    REGRAS:
-    - Se Lag > ${blockThreshold}ms constante: 'SCALE_UP_WORKERS'
-    - Se Lag < ${Math.floor(blockThreshold * 0.3)}ms por muito tempo e Memória estável: 'SCALE_DOWN_WORKERS' (Economia)
-    - Se Memória > ${heapThreshold}%: 'CLEAN_CACHE'
-    - Se I/O > ${ioThreshold}: 'REJECT_TRAFFIC'
-    - Se tudo está normal: 'NONE'
+  const prompt = `Você é um sistema de decisão para orquestração de recursos Node.js.
 
-    Responda apenas JSON: {"action": "string", "reason": "string", "intensity": number}
-  `;
+DADOS ATUAIS (valores numéricos exatos):
+- Lag atual: ${lagValue}ms
+- Memória atual: ${memoryValue.toFixed(2)}%
+- I/O ativo: ${ioValue} requisições
+- Função: ${data.function}
+
+LIMITES CONFIGURADOS:
+- Limite de Lag: ${blockThreshold}ms
+- Limite de Memória: ${heapThreshold}%
+- Limite de I/O: ${ioThreshold} requisições
+
+ANÁLISE PRÉ-CALCULADA:
+- Lag ${lagValue}ms ${isLagHigh ? ">" : "<="} ${blockThreshold}ms → Lag ${isLagHigh ? "ACIMA" : "DENTRO"} do limite
+- Memória ${memoryValue.toFixed(2)}% ${isMemoryHigh ? ">" : "<="} ${heapThreshold}% → Memória ${isMemoryHigh ? "ACIMA" : "DENTRO"} do limite
+- I/O ${ioValue} ${isIoHigh ? ">" : "<="} ${ioThreshold} → I/O ${isIoHigh ? "ACIMA" : "DENTRO"} do limite
+
+REGRAS DE DECISÃO (em ordem de prioridade):
+1. Se Memória ACIMA do limite → "CLEAN_CACHE"
+2. Se I/O ACIMA do limite → "REJECT_TRAFFIC"
+3. Se Lag ACIMA do limite → "SCALE_UP_WORKERS"
+4. Se Lag muito baixo (< ${Math.floor(blockThreshold * 0.3)}ms) e Memória baixa → "SCALE_DOWN_WORKERS"
+5. Se tudo dentro dos limites → "NONE"
+
+EXEMPLOS:
+- Lag=100ms, Limite=50ms → Lag ACIMA → {"action":"SCALE_UP_WORKERS","reason":"Lag 100ms excede limite de 50ms","intensity":7}
+- Lag=30ms, Limite=50ms → Lag DENTRO → {"action":"NONE","reason":"Lag 30ms dentro do limite de 50ms","intensity":1}
+- Memória=90%, Limite=85% → Memória ACIMA → {"action":"CLEAN_CACHE","reason":"Memória 90% excede limite de 85%","intensity":8}
+- Memória=70%, Limite=85% → Memória DENTRO → considere outras métricas
+
+IMPORTANTE: Use APENAS a análise pré-calculada acima. Não invente valores.
+
+Responda APENAS com JSON válido:
+{"action":"AÇÃO","reason":"explicação curta com valores reais","intensity":1-10}`;
 
   try {
     const res = await fetch(getOllamaEndpoint(), {
@@ -161,15 +308,39 @@ export async function askOllamaDecision(
         prompt: prompt,
         format: "json",
         stream: false,
+        options: {
+          temperature: 0.1, // Baixa temperatura para respostas mais determinísticas
+          top_p: 0.9,
+        },
       }),
       signal: AbortSignal.timeout(30000),
     });
 
     const result = await res.json();
     lastDecisionTime = Date.now();
-    return JSON.parse(result.response);
+
+    const parsed = JSON.parse(result.response) as DecisionResponse;
+
+    // Validação: se a IA errou na análise, corrige com base nos dados reais
+    const correctedDecision = validateAndCorrectDecision(parsed, {
+      lagValue,
+      memoryValue,
+      ioValue,
+      blockThreshold,
+      heapThreshold,
+      ioThreshold,
+      isLagHigh,
+      isMemoryHigh,
+      isIoHigh,
+      isLagLow,
+    });
+
+    return correctedDecision;
   } catch (e) {
-    console.error("Ollama indisponível ou Timeout");
+    console.error(
+      "[Ollama Error] Falha na consulta:",
+      e instanceof Error ? e.message : e,
+    );
     return null;
   } finally {
     isAnalyzing = false;
