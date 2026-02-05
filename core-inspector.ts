@@ -14,6 +14,20 @@ export class CoreInspector extends EventEmitter {
   private thresholds: InspectorOptions = { block: 10000, heap: 80, io: 50 };
   private lastBlockTime: number | null = null;
 
+  /**
+   * Retorna os thresholds configurados atualmente.
+   */
+  getThresholds(): InspectorOptions {
+    return { ...this.thresholds };
+  }
+
+  /**
+   * Atualiza os thresholds em runtime.
+   */
+  setThresholds(options: Partial<InspectorOptions>): void {
+    Object.assign(this.thresholds, options);
+  }
+
   start(options: InspectorOptions = {}) {
     Object.assign(this.thresholds, options);
 

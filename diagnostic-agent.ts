@@ -123,6 +123,12 @@ export async function askOllamaDecision(
 
   isAnalyzing = true;
 
+  // Obtém os thresholds configurados pelo user
+  const thresholds = inspector.getThresholds();
+  const blockThreshold = thresholds.block || 50;
+  const heapThreshold = thresholds.heap || 85;
+  const ioThreshold = thresholds.io || 100;
+
   const prompt = `
     Você é um Orquestrador de Recursos Autônomo.
     ESTADO ATUAL:
@@ -131,11 +137,17 @@ export async function askOllamaDecision(
     - Memória: ${data.memoryUsage}
     - I/O Ativo: ${data.activeRequests}
 
+    LIMITES CONFIGURADOS PELO USUÁRIO:
+    - Limite de Bloqueio: ${blockThreshold}ms
+    - Limite de Heap: ${heapThreshold}%
+    - Limite de I/O: ${ioThreshold} requisições
+
     OBJETIVO: Encontrar o equilíbrio entre performance e custo.
     REGRAS:
-    - Se Lag > 50ms constante: 'SCALE_UP_WORKERS'
-    - Se Lag < 15ms por muito tempo e Memória estável: 'SCALE_DOWN_WORKERS' (Economia)
-    - Se Memória > 85%: 'CLEAN_CACHE'
+    - Se Lag > ${blockThreshold}ms constante: 'SCALE_UP_WORKERS'
+    - Se Lag < ${Math.floor(blockThreshold * 0.3)}ms por muito tempo e Memória estável: 'SCALE_DOWN_WORKERS' (Economia)
+    - Se Memória > ${heapThreshold}%: 'CLEAN_CACHE'
+    - Se I/O > ${ioThreshold}: 'REJECT_TRAFFIC'
     - Se tudo está normal: 'NONE'
 
     Responda apenas JSON: {"action": "string", "reason": "string", "intensity": number}
@@ -228,7 +240,7 @@ export async function executeAction(decision: DecisionResponse): Promise<void> {
 
 // Inicia o Inspetor quando este módulo é carregado
 inspector.start({
-  block: 5000, // Tempo de bloqueio em ms para considerar alerta
+  block: 3000, // Tempo de bloqueio em ms para considerar alerta
   heap: 85, // Porcentagem de uso de heap para alerta
   io: 50, // Número de requisições de I/O ativas para alerta
   criticalFunctions: ["expensiveCalculation"], // Nomes de funções a monitorar especificamente
