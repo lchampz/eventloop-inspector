@@ -8,8 +8,7 @@
 using namespace v8;
 
 typedef struct {
-    uv_loop_t* main_loop;
-    std::atomic<uint32_t> microtasks_count;
+    uv_loop_t *main_loop;
     char top_function[256];
     size_t used_heap;
     size_t total_heap;
@@ -19,6 +18,7 @@ typedef struct {
 
 monitor_data_t global_data;
 uv_thread_t monitor_thread_id;
+std::atomic<bool> monitor_started(false);
 
 void CallJsEventHandler(napi_env env, napi_value js_callback, void* context, void* data) {
     napi_value undefined, obj, js_func, js_mem_used, js_mem_total, js_reqs;
@@ -26,10 +26,8 @@ void CallJsEventHandler(napi_env env, napi_value js_callback, void* context, voi
     napi_create_object(env, &obj);
 
     napi_create_string_utf8(env, global_data.top_function, NAPI_AUTO_LENGTH, &js_func);
-    napi_create_int64(env, global_data.used_heap, &js_mem_used);
-    napi_create_int64(env, global_data.total_heap, &js_mem_total);
-
-    // pega o n de requisições ativas na libuv
+    napi_create_int64(env, (int64_t)global_data.used_heap, &js_mem_used);
+    napi_create_int64(env, (int64_t)global_data.total_heap, &js_mem_total);
     napi_create_uint32(env, (uint32_t)global_data.main_loop->active_reqs.count, &js_reqs);
 
     napi_set_named_property(env, obj, "function", js_func);
@@ -40,38 +38,29 @@ void CallJsEventHandler(napi_env env, napi_value js_callback, void* context, voi
     napi_call_function(env, undefined, js_callback, 1, &obj, NULL);
 }
 
-void CaptureStackTrace(Isolate* isolate) {
+void OnMicrotasksCompleted(Isolate *isolate, void *data)
+{
+    HeapStatistics stats;
+    isolate->GetHeapStatistics(&stats);
+    global_data.used_heap = stats.used_heap_size();
+    global_data.total_heap = stats.heap_size_limit();
+
     HandleScope handle_scope(isolate);
     Local<StackTrace> stack = StackTrace::CurrentStackTrace(isolate, 1);
     if (stack->GetFrameCount() > 0) {
         Local<StackFrame> frame = stack->GetFrame(isolate, 0);
         String::Utf8Value func(isolate, frame->GetFunctionName());
-        String::Utf8Value script(isolate, frame->GetScriptName());
-        snprintf(global_data.top_function, sizeof(global_data.top_function), "%s (%s)", *func ? *func : "anonymous", *script ? *script : "internal");
+        snprintf(global_data.top_function, sizeof(global_data.top_function), "%s", *func ? *func : "anonymous");
     }
-}
-
-void OnMicrotasksCompleted(Isolate* isolate, void* data) {
-    global_data.microtasks_count++;
-    HeapStatistics stats;
-    isolate->GetHeapStatistics(&stats);
-    global_data.used_heap = stats.used_heap_size();
-    global_data.total_heap = stats.heap_size_limit();
-    CaptureStackTrace(isolate);
 }
 
 void monitor_thread_func(void* arg) {
     monitor_data_t* d = (monitor_data_t*)arg;
     uint64_t last_check = uv_now(d->main_loop);
-
     while (!d->stop_signal) {
         uint64_t now = uv_now(d->main_loop);
-        uint64_t delta = now - last_check;
-
-        if (delta > 40) { //tick > 40ms
+        if ((now - last_check) > 40)
             napi_call_threadsafe_function(d->tsfn, NULL, napi_tsfn_blocking);
-        }
-
         last_check = now;
         uv_sleep(16);
     }
@@ -83,26 +72,26 @@ void cleanup(void* arg) {
 }
 
 napi_value StartMonitor(napi_env env, napi_callback_info info) {
+    // Evita inicialização duplicada
+    bool expected = false;
+    if (!monitor_started.compare_exchange_strong(expected, true)) {
+        // Já está rodando, retorna sem fazer nada
+        return NULL;
+    }
+
     size_t argc = 1;
     napi_value args[1], resource_name;
     napi_get_cb_info(env, info, &argc, args, NULL, NULL);
-
-    napi_create_string_utf8(env, "EventLoopBlockMonitor", NAPI_AUTO_LENGTH, &resource_name);
-
-    napi_create_threadsafe_function(
-        env, args[0], NULL, resource_name, 0, 1, NULL, NULL, NULL,
-        CallJsEventHandler, &global_data.tsfn
-    );
+    napi_create_string_utf8(env, "EventLoopMonitor", NAPI_AUTO_LENGTH, &resource_name);
+    napi_create_threadsafe_function(env, args[0], NULL, resource_name, 0, 1, NULL, NULL, NULL, CallJsEventHandler, &global_data.tsfn);
 
     Isolate* isolate = Isolate::GetCurrent();
     isolate->AddMicrotasksCompletedCallback(OnMicrotasksCompleted);
-
     global_data.main_loop = uv_default_loop();
     global_data.stop_signal = 0;
 
     napi_add_env_cleanup_hook(env, cleanup, NULL);
     uv_thread_create(&monitor_thread_id, monitor_thread_func, &global_data);
-
     return NULL;
 }
 
@@ -112,5 +101,4 @@ napi_value Init(napi_env env, napi_value exports) {
     napi_set_named_property(env, exports, "start", fn);
     return exports;
 }
-
 NAPI_MODULE(NODE_GYP_MODULE_NAME, Init)

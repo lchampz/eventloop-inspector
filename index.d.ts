@@ -1,42 +1,45 @@
+// index.d.ts (na raiz do projeto)
+
 import { EventEmitter } from "events";
 
-/**
- * Interface que representa os dados de um alerta de bloqueio
- */
-export interface BlockEventData {
-  /** Nome da função que estava no topo da stack no momento do bloqueio */
+export interface InspectorBlockData {
   function: string;
-  /** Timestamp ISO do momento do alerta */
-  timestamp: string;
-  /** Porcentagem de uso da memória Heap do V8 (ex: "45.50%") */
-  memoryUsage: string;
-  /** Quantidade de bytes da Heap em uso */
   usedHeap: number;
-  /** Limite total de memória Heap disponível para o processo */
   totalHeap: number;
-  /** Número de requisições de I/O pendentes na libuv */
   activeRequests: number;
+  microtasksCount?: number;
+  memoryUsage: string; // Ex: "80.50%"
+  timestamp?: string; // ISO string
+  blockDuration?: number; // ms
 }
 
-/**
- * Opções de inicialização do inspetor
- */
 export interface InspectorOptions {
-  /** Tempo em milissegundos para considerar um tick como 'bloqueado'. Padrão: 40 */
-  threshold?: number;
+  block?: number; // Limite de duração do bloco em ms
+  heap?: number; // Limite de uso de heap em %
+  io?: number; // Limite de requisições I/O ativas
+  microtasks?: number; // Limite de microtasks pendentes
+  criticalFunctions?: string[]; // Nomes de funções a monitorar especificamente
 }
 
-declare class CoreInspector extends EventEmitter {
-  /**
-   * Inicia o monitoramento nativo do Event Loop e V8.
-   * @param options Configurações opcionais de monitoramento.
-   */
-  start(options?: InspectorOptions): void;
+export interface DecisionResponse {
+  action: "CLEAN_CACHE" | "SCALE_WORKERS" | "REJECT_TRAFFIC" | "NONE";
+  reason: string;
+  intensity?: number; // 1-10
+}
 
-  /**
-   * Evento disparado quando um bloqueio de performance é detectado.
-   */
-  on(event: "block", listener: (data: BlockEventData) => void): this;
+export declare class CoreInspector extends EventEmitter {
+  start(options?: InspectorOptions): void;
+  setThresholds(newThresholds: InspectorOptions): void;
+
+  // Eventos de telemetria
+  on(event: "block", listener: (data: InspectorBlockData) => void): this;
+  on(event: "heapHigh", listener: (data: InspectorBlockData) => void): this;
+  on(event: "ioStall", listener: (data: InspectorBlockData) => void): this;
+  on(event: "raceSuspect", listener: (data: InspectorBlockData) => void): this;
+  on(
+    event: "blockCritical",
+    listener: (data: InspectorBlockData) => void,
+  ): this;
 }
 
 export const inspector: CoreInspector;
