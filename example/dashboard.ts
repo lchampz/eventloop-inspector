@@ -12,28 +12,45 @@ const io = new Server(server, { cors: { origin: "*" } }); // Permite CORS para f
 
 // Inicia o inspetor imediatamente
 inspector.start({
-  block: 50, // Threshold para o monitoramento
+  block: 5000, // Threshold para o monitoramento
   heap: 85,
   io: 60,
   criticalFunctions: ["expensiveCalculation"], // Exemplo de função crítica
 });
 
 // Evento principal para enviar telemetria e acionar a IA
-inspector.on("block", async (data: InspectorBlockData) => {
-  io.emit("telemetry", data); // Envia todas as métricas para o dashboard
+let lagSamples: number[] = [];
 
-  // Se o block for significativo, consulta a IA
-  if (
-    data.blockDuration &&
-    data.blockDuration > (inspector as any).thresholds.block
-  ) {
-    const decision = await askOllamaDecision(data); // Consulta a IA
-    if (decision) {
-      io.emit("ia_decision", {
-        timestamp: new Date().toISOString(),
-        ...decision,
-      }); // Envia decisão para o dashboard
-      executeAction(decision); // Executa a ação sugerida pela IA
+inspector.on("block", async (data: InspectorBlockData) => {
+  io.emit("telemetry", data);
+
+  lagSamples.push(data.blockDuration || 0);
+
+  if (lagSamples.length >= 10) {
+    const avgLag = lagSamples.reduce((a, b) => a + b, 0) / lagSamples.length;
+    lagSamples = []; // Reseta buffer
+
+    if (avgLag > 40) {
+      const decision = await askOllamaDecision({
+        ...data,
+        blockDuration: avgLag,
+      });
+
+      if (decision) {
+        io.emit("ia_decision", {
+          timestamp: new Date().toISOString(),
+          ...decision,
+        });
+        executeAction(decision);
+      }
+    } else if (avgLag < 15) {
+      const downDecision = await askOllamaDecision({
+        ...data,
+        blockDuration: avgLag,
+      });
+      if (downDecision?.action === "SCALE_DOWN_WORKERS") {
+        executeAction(downDecision);
+      }
     }
   }
 });
@@ -157,10 +174,9 @@ app.get("/simulate-heavy-io", (req, res) => {
   res.send("I/O simulada!");
 });
 
-// Endpoint para simular Função Crítica (reconhecida pela IA)
+// Endpoint para simular Função Crítica
 app.get("/simulate-critical-function", (req, res) => {
   console.log("Simulando Função Crítica...");
-  // A função crítica precisa ter o nome exato do criticalFunctions
   const criticalFunctionWrapper = () => {
     let sum = 0;
     for (let i = 0; i < 200000000; i++) sum += i; // Bloqueio

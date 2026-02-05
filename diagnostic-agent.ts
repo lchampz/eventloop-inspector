@@ -5,7 +5,13 @@ import { InspectorBlockData } from "./index.d.js";
  * Interface para a resposta estruturada da IA.
  */
 export interface DecisionResponse {
-  action: "CLEAN_CACHE" | "SCALE_WORKERS" | "REJECT_TRAFFIC" | "NONE";
+  action:
+    | "CLEAN_CACHE"
+    | "SCALE_WORKERS"
+    | "REJECT_TRAFFIC"
+    | "NONE"
+    | "SCALE_DOWN_WORKERS"
+    | "SCALE_UP_WORKERS";
   reason: string;
   intensity?: number; // 1-10, para ações mais graduais
 }
@@ -13,51 +19,60 @@ export interface DecisionResponse {
 /**
  * Consulta o Ollama local com um prompt de SRE.
  */
+let isAnalyzing = false;
+let lastDecisionTime = 0;
+const COOLDOWN_MS = 10000; // 10 segundos de espera entre decisões da IA
+
 export async function askOllamaDecision(
   data: InspectorBlockData,
 ): Promise<DecisionResponse | null> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout para a IA
+  const now = Date.now();
+
+  if (isAnalyzing || now - lastDecisionTime < COOLDOWN_MS) {
+    //evita sobrecarga no modelo
+    return null;
+  }
+
+  isAnalyzing = true;
 
   const prompt = `
-    Você é um especialista em SRE para sistemas Node.js. Analise o seguinte evento de performance:
-    - Função: ${data.function || "N/A"}
-    - Duração do Bloqueio do Event Loop: ${data.blockDuration}ms (limite aceitável 40ms)
-    - Uso de Memória Heap: ${data.memoryUsage} (limite aceitável 85%)
-    - Requisições I/O Ativas: ${data.activeRequests} (limite aceitável 60)
+    Você é um Orquestrador de Recursos Autônomo.
+    ESTADO ATUAL:
+    - Função: ${data.function}
+    - Lag: ${data.blockDuration}ms
+    - Memória: ${data.memoryUsage}
+    - I/O Ativo: ${data.activeRequests}
 
-    **Diagnóstico Rápido:** Identifique o tipo de gargalo (CPU-Bound, Memory-Bound, I/O-Bound).
-    **Ação Recomendada (APENAS UMA):**
-    - 'SCALE_WORKERS': Se for CPU-Bound.
-    - 'CLEAN_CACHE': Se for Memory-Bound e houver cache.
-    - 'REJECT_TRAFFIC': Se o servidor estiver sobrecarregado (I/O ou CPU) e perto da falha.
-    - 'NONE': Se o problema for leve ou sem ação clara.
+    OBJETIVO: Encontrar o equilíbrio entre performance e custo.
+    REGRAS:
+    - Se Lag > 50ms constante: 'SCALE_UP_WORKERS'
+    - Se Lag < 15ms por muito tempo e Memória estável: 'SCALE_DOWN_WORKERS' (Economia)
+    - Se Memória > 85%: 'CLEAN_CACHE'
+    - Se tudo está normal: 'NONE'
 
-    Retorne APENAS um objeto JSON no formato: {"action": "string", "reason": "string", "intensity": number}
-    A razão deve ser concisa e a intensidade de 1 a 10 (1 para leve, 10 para crítico).
+    Responda apenas JSON: {"action": "string", "reason": "string", "intensity": number}
   `;
 
   try {
-    const response = await fetch("http://localhost:11434/api/generate", {
+    const res = await fetch("http://localhost:11434/api/generate", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
       body: JSON.stringify({
-        model: "llama3", // Ou 'mistral', 'phi3'
+        model: "llama3",
         prompt: prompt,
         format: "json",
         stream: false,
       }),
+      signal: AbortSignal.timeout(30000),
     });
 
-    const result = await response.json();
-    clearTimeout(timeoutId);
-    // Tenta parsear o JSON mesmo se vier com algum lixo antes/depois
-    const jsonString = result.response.replace(/```json|```/g, "").trim();
-    return JSON.parse(jsonString);
-  } catch (err) {
-    console.error(`[Ollama Error] Falha na consulta: ${err}`);
+    const result = await res.json();
+    lastDecisionTime = Date.now();
+    return JSON.parse(result.response);
+  } catch (e) {
+    console.error("Ollama indisponível ou Timeout");
     return null;
+  } finally {
+    isAnalyzing = false;
   }
 }
 
@@ -72,6 +87,15 @@ export function executeAction(decision: DecisionResponse) {
   switch (decision.action) {
     case "SCALE_WORKERS":
       console.log("[AÇÃO] Escalando Workers (Implementação pendente)...");
+      break;
+    case "SCALE_UP_WORKERS":
+      console.log("🚀 Aumentando threads para processamento paralelo");
+      // Sua lógica de pool.addWorker()
+      break;
+
+    case "SCALE_DOWN_WORKERS":
+      console.log("📉 Reduzindo threads ociosas para economizar recursos");
+      // Sua lógica de pool.removeWorker() ou pool.terminate()
       break;
     case "CLEAN_CACHE":
       if (global.gc) {
